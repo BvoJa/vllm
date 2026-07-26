@@ -1,0 +1,21 @@
+version: 0.2
+
+env:
+  secrets-manager:
+    DOCKERHUB_USER: "dockerhub:DOCKERHUB_USER"
+    DOCKERHUB_PASS: "dockerhub:DOCKERHUB_PASS"
+
+phases:
+  pre_build:
+    commands:
+      - echo "Đăng nhập vào Docker Hub..."
+      - echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin
+  build:
+    commands:
+      - echo "Bắt đầu build Docker image..."
+      # Đã sửa lại tham số --tag để khớp hoàn toàn với lệnh push bên dưới
+      - DOCKER_BUILDKIT=1 docker build -f docker/Dockerfile . --target vllm-openai --tag $DOCKERHUB_USER/vllm-optimized:latest --build-arg RUN_WHEEL_CHECK=false --build-arg torch_cuda_arch_list="9.0" --build-arg max_jobs=24 --build-arg nvcc_threads=4
+  post_build:
+    commands:
+      - echo "Push image lên Docker Hub..."
+      - docker push $DOCKERHUB_USER/vllm-optimized:latest
