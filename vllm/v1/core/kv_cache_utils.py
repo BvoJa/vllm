@@ -10,7 +10,8 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Any, NewType, TypeAlias, cast, overload
+import time
+from typing import Any, ClassVar, NewType, TypeAlias, cast, overload
 
 from vllm import envs
 from vllm.config import VllmConfig
@@ -137,6 +138,13 @@ class KVCacheBlock:
     # Whether the block is a null block that should never be cached.
     is_null: bool = False
 
+    # Time when block was last used (set when ref_cnt > 0), for time-based eviction.
+    # Only blocks with last_used_time set for > 4000ms can be added to free queue.
+    last_used_time: float | None = None
+
+    EVICTION_TIMEOUT_MS: ClassVar[float] = 5000.0
+    """Time in milliseconds a block must be unused (ref_cnt=0) before it can be evicted."""
+
     @property
     def block_hash(self) -> BlockHashWithGroupId | None:
         return self._block_hash
@@ -144,6 +152,26 @@ class KVCacheBlock:
     @property
     def block_hash_num_tokens(self) -> int | None:
         return self._block_hash_num_tokens
+
+    def touch(self) -> None:
+        """Update last_used_time when block is accessed."""
+        self.last_used_time = time.monotonic()
+
+    def is_evictable(self) -> bool:
+        """
+        Check if block can be evicted (freed).
+        
+        Returns True only if:
+        - Block has been unused (ref_cnt=0) for at least EVICTION_TIMEOUT_MS
+        - And last_used_time has been set
+        
+        Returns False otherwise.
+        """
+        if self.last_used_time is None:
+            return False
+        
+        elapsed_ms = (time.monotonic() - self.last_used_time) * 1000
+        return elapsed_ms >= self.EVICTION_TIMEOUT_MS
 
     def set_block_hash(
         self,
