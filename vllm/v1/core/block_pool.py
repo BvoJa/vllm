@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from collections.abc import Iterable, Sequence
+import time
 from typing import Any
 
 from vllm.distributed.kv_events import (
@@ -641,6 +642,7 @@ class BlockPool:
         # In order to only iterate the list once, we duplicated code a bit
         if self.enable_caching:
             for block in ret:
+                block.touch()  # Update last_used_time when block is allocated
                 self._maybe_evict_cached_block(block)
                 assert block.ref_cnt == 0
                 block.ref_cnt += 1
@@ -648,6 +650,7 @@ class BlockPool:
                     self.metrics_collector.on_block_allocated(block)
         else:
             for block in ret:
+                block.touch()  # Update last_used_time when block is allocated
                 assert block.ref_cnt == 0
                 block.ref_cnt += 1
                 if self.metrics_collector:
@@ -686,6 +689,8 @@ class BlockPool:
             blocks: A list of blocks to touch.
         """
         for block in blocks:
+            # Update last_used_time when block is accessed
+            block.touch()
             # ref_cnt=0 means this block is in the free list (i.e. eviction
             # candidate), so remove it.
             if block.ref_cnt == 0 and not block.is_null:
@@ -703,15 +708,22 @@ class BlockPool:
                 priority.
         """
         # Identify blocks with hash (LRU cache) and without it (will never match in APC)
+        # Only add blocks to free queue if they are evictable (unused for > 4000ms)
         blocks_with_hash = []
         blocks_without_hash = []
         for block in ordered_blocks:
             block.ref_cnt -= 1
             if block.ref_cnt == 0 and not block.is_null:
-                if block.block_hash is None:
-                    blocks_without_hash.append(block)
-                else:
-                    blocks_with_hash.append(block)
+                # Update last_used_time when block becomes free
+                if block.last_used_time is None:
+                    block.last_used_time = time.monotonic()
+                
+                if block.is_evictable():
+                    if block.block_hash is None:
+                        blocks_without_hash.append(block)
+                    else:
+                        blocks_with_hash.append(block)
+                # If not evictable, block stays out of free queue (not reusable yet)
 
         # Blocks without hash always get evicted first - prepend them last to the tail
         self.free_block_queue.prepend_n(blocks_without_hash)
