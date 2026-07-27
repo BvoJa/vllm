@@ -166,11 +166,15 @@ class BlockPool:
         hash_block_size: int,
         enable_kv_cache_events: bool = False,
         metrics_collector: KVCacheMetricsCollector | None = None,
+        prefix_cache_policy: str = "lru",
+        slru_protected_tokens: int = 1000,
     ):
         assert isinstance(num_gpu_blocks, int) and num_gpu_blocks > 0
         self.num_gpu_blocks = num_gpu_blocks
         self.enable_caching = enable_caching
         self.hash_block_size = hash_block_size
+        self.prefix_cache_policy = prefix_cache_policy
+        self.slru_protected_tokens = slru_protected_tokens
         # All kv-cache blocks.
         self.blocks: list[KVCacheBlock] = [
             KVCacheBlock(idx) for idx in range(num_gpu_blocks)
@@ -698,24 +702,60 @@ class BlockPool:
         """Free a list of blocks. The blocks should be ordered by their
         eviction priority, where the first block will be evicted first.
 
+        When ``prefix_cache_policy == "slru"``, freed blocks are classified
+        into three tiers by prefix depth:
+
+        * **unhashed** (no block hash) — evicted first.
+        * **probationary** (hash exists but depth > slru_protected_tokens) —
+          evicted after all unhashed blocks.
+        * **protected** (depth <= slru_protected_tokens) — evicted last.
+
+        Within each tier, LRU ordering is preserved.  All probationary blocks
+        from *every* past call remain ahead of all protected blocks because
+        ``prepend_n`` inserts at the head (before existing blocks) while
+        ``append_n`` inserts at the tail (after existing blocks).
+
         Args:
             ordered_blocks: A list of blocks to free ordered by their eviction
                 priority.
         """
-        # Identify blocks with hash (LRU cache) and without it (will never match in APC)
-        blocks_with_hash = []
-        blocks_without_hash = []
-        for block in ordered_blocks:
-            block.ref_cnt -= 1
-            if block.ref_cnt == 0 and not block.is_null:
-                if block.block_hash is None:
-                    blocks_without_hash.append(block)
-                else:
-                    blocks_with_hash.append(block)
+        if self.prefix_cache_policy == "slru":
+            unhashed: list[KVCacheBlock] = []
+            probationary: list[KVCacheBlock] = []
+            protected: list[KVCacheBlock] = []
+            for block in ordered_blocks:
+                block.ref_cnt -= 1
+                if block.ref_cnt == 0 and not block.is_null:
+                    if block.block_hash is None:
+                        unhashed.append(block)
+                    elif (
+                        block.block_hash_num_tokens is not None
+                        and block.block_hash_num_tokens
+                        <= self.slru_protected_tokens
+                    ):
+                        protected.append(block)
+                    else:
+                        probationary.append(block)
+            # unhashed+probationary → head (evict first); protected → tail
+            self.free_block_queue.prepend_n(unhashed + probationary)
+            self.free_block_queue.append_n(protected)
+        else:
+            # LRU: identify blocks with hash and without it
+            blocks_with_hash: list[KVCacheBlock] = []
+            blocks_without_hash: list[KVCacheBlock] = []
+            for block in ordered_blocks:
+                block.ref_cnt -= 1
+                if block.ref_cnt == 0 and not block.is_null:
+                # When caching is disabled we always append for better
+                # GPU cache locality from reusing recently used blocks
+                    if block.block_hash is None:
+                        blocks_without_hash.append(block)
+                    else:
+                        blocks_with_hash.append(block)
 
-        # Blocks without hash always get evicted first - prepend them last to the tail
-        self.free_block_queue.prepend_n(blocks_without_hash)
-        self.free_block_queue.append_n(blocks_with_hash)
+            # Blocks without hash get evicted first - prepend them last to the tail
+            self.free_block_queue.prepend_n(blocks_without_hash)
+            self.free_block_queue.append_n(blocks_with_hash)
 
     def evict_blocks(self, block_ids: set[int]) -> None:
         """evict blocks from the prefix cache by their block IDs.
