@@ -122,7 +122,12 @@ class CacheConfig:
 
     Falls back to the `VLLM_PREFIX_CACHE_POLICY` environment variable, then to
     "lru", when unset."""
-    
+
+    slru_protected_tokens: int | None = Field(default=1000, ge=0)
+    """Prefix depth in tokens at or below which a block enters the SLRU
+    protected segment. Only meaningful when `prefix_cache_policy="slru"`.
+    Falls back to `VLLM_SLRU_PROTECTED_TOKENS`, then to 1000, when unset."""
+
     calculate_kv_scales: bool = False
     """Deprecated: This option is deprecated and will be removed in v0.19.
     It enables dynamic calculation of `k_scale` and `v_scale` when
