@@ -38,7 +38,7 @@ MambaDType = Literal["auto", "float32", "float16", "bfloat16"]
 MambaCacheMode = Literal["all", "align", "none"]
 PrefixCachingHashAlgo = Literal["sha256", "sha256_cbor", "xxhash", "xxhash_cbor"]
 KVOffloadingBackend = Literal["native", "lmcache"]
-
+PrefixCachePolicy  = Literal["lru", "slru"]
 
 @config
 class CacheConfig:
@@ -108,6 +108,21 @@ class CacheConfig:
       security risk tolerance against the performance benefits before turning this on.
     - "xxhash_cbor" combines canonical CBOR serialization with xxHash for
       reproducible hashing. Requires the optional ``xxhash`` package."""
+
+    prefix_cache_policy: PrefixCachePolicy = "lru"
+    """Free-list eviction ordering policy for the V1 prefix cache:
+
+    - "lru" (default) evicts the least-recently-freed block. Within a single
+      freed request, tail blocks are already ordered ahead of prefix blocks, so
+      plain LRU is mildly prefix-preserving.
+    - "slru" splits the free list into a protected and a probationary segment.
+      Blocks whose prefix depth is at or below `slru_protected_tokens` go to the
+      protected segment and are only evicted once the probationary segment is
+      exhausted. Both segments stay O(1) and add no per-block memory.
+
+    Falls back to the `VLLM_PREFIX_CACHE_POLICY` environment variable, then to
+    "lru", when unset."""
+    
     calculate_kv_scales: bool = False
     """Deprecated: This option is deprecated and will be removed in v0.19.
     It enables dynamic calculation of `k_scale` and `v_scale` when
