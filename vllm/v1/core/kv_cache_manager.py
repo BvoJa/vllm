@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, overload
 
+from vllm.config import CacheConfig
+from vllm.config.cache import PrefixCachePolicy
 from vllm.distributed.kv_events import BlockStored, KVCacheEvent
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
@@ -118,6 +120,10 @@ class KVCacheManager:
         max_model_len: int,
         scheduler_block_size: int,
         hash_block_size: int,
+        prefix_cache_policy: PrefixCachePolicy,
+        slru_protected_tokens: int,
+        enable_skip_filler_hashing: bool,
+        filler_depth_tokens: int,
         max_in_flight_tokens: int | None = None,
         enable_caching: bool = True,
         use_eagle: bool = False,
@@ -129,6 +135,10 @@ class KVCacheManager:
         watermark: float = 0.0,
     ) -> None:
         self.max_model_len = max_model_len
+        self.prefix_cache_policy = prefix_cache_policy
+        self.slru_protected_tokens = slru_protected_tokens
+        self.enable_skip_filler_hashing = enable_skip_filler_hashing
+        self.filler_depth_tokens = filler_depth_tokens
         # When unset, fall back to `max_model_len` so the recycling-aware cap
         # collapses to the prior (uncapped) admission behavior. The scheduler
         # always supplies the real value at runtime.
@@ -157,6 +167,10 @@ class KVCacheManager:
             scheduler_block_size=scheduler_block_size,
             hash_block_size=hash_block_size,
             metrics_collector=self.metrics_collector,
+            prefix_cache_policy=prefix_cache_policy,
+            slru_protected_tokens=slru_protected_tokens,
+            enable_skip_filler_hashing=enable_skip_filler_hashing,
+            filler_depth_tokens=filler_depth_tokens,
         )
         self.num_kv_cache_groups = len(kv_cache_config.kv_cache_groups)
         self.block_pool = self.coordinator.block_pool

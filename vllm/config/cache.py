@@ -38,6 +38,7 @@ MambaDType = Literal["auto", "float32", "float16", "bfloat16"]
 MambaCacheMode = Literal["all", "align", "none"]
 PrefixCachingHashAlgo = Literal["sha256", "sha256_cbor", "xxhash", "xxhash_cbor"]
 KVOffloadingBackend = Literal["native", "lmcache"]
+PrefixCachePolicy = Literal["lru", "slru"]
 
 
 @config
@@ -92,6 +93,21 @@ class CacheConfig:
     `ModelConfig` and that value should be manually duplicated here."""
     enable_prefix_caching: bool = True
     """Whether to enable prefix caching."""
+    prefix_cache_policy: "PrefixCachePolicy" = Field(
+        default="lru",
+        description=
+        'Cache replacement policy for prefix caching. Can be "lru" or "slru".'
+    )
+    slru_protected_tokens: int = Field(
+        default=0,
+        description=
+        "Number of initial tokens to protect from eviction in SLRU policy.")
+    enable_skip_filler_hashing: bool = Field(
+        default=False,
+        description=
+        "A block that has block_hash_num_tokens > a bound is not cached.")
+    filler_depth_tokens: int = Field(
+        default=3000, description="The bound for skipping hashing scheme.")
     prefix_caching_hash_algo: PrefixCachingHashAlgo = "sha256"
     """Set the hash algorithm for prefix caching:
 
@@ -208,6 +224,10 @@ class CacheConfig:
             "num_gpu_blocks_override",
             "enable_prefix_caching",
             "prefix_caching_hash_algo",
+            "prefix_cache_policy",
+            "slru_protected_tokens",
+            "enable_skip_filler_hashing",
+            "filler_depth_tokens",
             # Prefix-caching implementation detail (doesn't affect compiled graph).
             "hash_block_size",
             "mamba_page_size_padded",

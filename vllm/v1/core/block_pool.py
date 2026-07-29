@@ -12,6 +12,7 @@ from vllm.distributed.kv_events import (
 )
 from vllm.logger import init_logger
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
+from vllm.config.cache import PrefixCachePolicy
 from vllm.v1.core.kv_cache_utils import (
     BlockHash,
     BlockHashWithGroupId,
@@ -164,6 +165,10 @@ class BlockPool:
         num_gpu_blocks: int,
         enable_caching: bool,
         hash_block_size: int,
+        prefix_cache_policy: PrefixCachePolicy,
+        slru_protected_tokens: int,
+        enable_skip_filler_hashing: bool,
+        filler_depth_tokens: int,
         enable_kv_cache_events: bool = False,
         metrics_collector: KVCacheMetricsCollector | None = None,
     ):
@@ -171,6 +176,10 @@ class BlockPool:
         self.num_gpu_blocks = num_gpu_blocks
         self.enable_caching = enable_caching
         self.hash_block_size = hash_block_size
+        self.prefix_cache_policy = prefix_cache_policy
+        self.slru_protected_tokens = slru_protected_tokens
+        self.enable_skip_filler_hashing = enable_skip_filler_hashing
+        self.filler_depth_tokens = filler_depth_tokens
         # All kv-cache blocks.
         self.blocks: list[KVCacheBlock] = [
             KVCacheBlock(idx) for idx in range(num_gpu_blocks)
@@ -274,6 +283,10 @@ class BlockPool:
                 continue
             block_hash = new_block_hashes[i]
             num_hash_tokens = (num_cached_blocks + i + 1) * block_size
+
+            if (self.enable_skip_filler_hashing
+                    and num_hash_tokens > self.filler_depth_tokens):
+                continue
 
             # Update and added the full block to the cache.
             block_hash_with_group_id = make_block_hash_with_group_id(
@@ -480,6 +493,10 @@ class BlockPool:
         if block.is_null:
             return None
 
+        if (self.enable_skip_filler_hashing
+                and num_tokens > self.filler_depth_tokens):
+            return None
+
         assert block_size > self.hash_block_size
         assert block_size % self.hash_block_size == 0
         assert num_tokens % block_size != 0
@@ -669,6 +686,12 @@ class BlockPool:
         if self.metrics_collector:
             self.metrics_collector.on_block_evicted(block)
 
+        if self.prefix_cache_policy == "slru":
+            if (block.block_hash_num_tokens is not None
+                    and block.block_hash_num_tokens <=
+                    self.slru_protected_tokens):
+                return False
+
         evicted_hashes = self._remove_cached_block_hashes(block)
         if not evicted_hashes:
             # The block doesn't have hash, eviction is not needed
@@ -689,7 +712,14 @@ class BlockPool:
             # ref_cnt=0 means this block is in the free list (i.e. eviction
             # candidate), so remove it.
             if block.ref_cnt == 0 and not block.is_null:
-                self.free_block_queue.remove(block)
+                if self.prefix_cache_policy == "slru" and (
+                        block.block_hash_num_tokens is not None
+                        and block.block_hash_num_tokens <=
+                        self.slru_protected_tokens):
+                    # Protected blocks are not in the free queue.
+                    pass
+                else:
+                    self.free_block_queue.remove(block)
             block.ref_cnt += 1
             if self.metrics_collector:
                 self.metrics_collector.on_block_accessed(block)
@@ -708,6 +738,18 @@ class BlockPool:
         for block in ordered_blocks:
             block.ref_cnt -= 1
             if block.ref_cnt == 0 and not block.is_null:
+                if self.prefix_cache_policy == "slru":
+                    if (block.block_hash_num_tokens is not None
+                            and block.block_hash_num_tokens <=
+                            self.slru_protected_tokens):
+                        continue
+                    if (self.enable_skip_filler_hashing
+                            and block.block_hash_num_tokens is not None
+                            and block.block_hash_num_tokens >
+                            self.filler_depth_tokens):
+                        self._maybe_evict_cached_block(block)
+                        blocks_without_hash.append(block)
+                        continue
                 if block.block_hash is None:
                     blocks_without_hash.append(block)
                 else:
