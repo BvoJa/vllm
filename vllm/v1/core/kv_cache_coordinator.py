@@ -5,6 +5,8 @@ from collections.abc import Sequence
 from typing import NamedTuple
 
 from vllm import envs
+
+from vllm.config.cache import PrefixCachePolicy
 from vllm.v1.core.block_pool import BlockPool
 from vllm.v1.core.kv_cache_metrics import KVCacheMetricsCollector
 from vllm.v1.core.kv_cache_utils import (
@@ -76,6 +78,10 @@ class KVCacheCoordinator(ABC):
         scheduler_block_size: int,
         hash_block_size: int,
         metrics_collector: KVCacheMetricsCollector | None = None,
+        prefix_cache_policy: PrefixCachePolicy = "lru",
+        slru_protected_tokens: int = 0,
+        enable_skip_filler_hashing: bool = False,
+        filler_depth_tokens: int = 0,
     ):
         self.kv_cache_config = kv_cache_config
         self.max_model_len = max_model_len
@@ -92,6 +98,10 @@ class KVCacheCoordinator(ABC):
             num_gpu_blocks=kv_cache_config.num_blocks,
             enable_caching=enable_caching,
             hash_block_size=hash_block_size,
+            prefix_cache_policy=prefix_cache_policy,
+            slru_protected_tokens=slru_protected_tokens,
+            enable_skip_filler_hashing=enable_skip_filler_hashing,
+            filler_depth_tokens=filler_depth_tokens,
             enable_kv_cache_events=enable_kv_cache_events,
             metrics_collector=metrics_collector,
         )
@@ -394,6 +404,10 @@ class KVCacheCoordinatorNoPrefixCache(KVCacheCoordinator):
         scheduler_block_size: int,
         hash_block_size: int,
         metrics_collector: KVCacheMetricsCollector | None = None,
+        prefix_cache_policy: PrefixCachePolicy = "lru",
+        slru_protected_tokens: int = 0,
+        enable_skip_filler_hashing: bool = False,
+        filler_depth_tokens: int = 0,
     ):
         super().__init__(
             kv_cache_config,
@@ -407,6 +421,10 @@ class KVCacheCoordinatorNoPrefixCache(KVCacheCoordinator):
             scheduler_block_size=scheduler_block_size,
             hash_block_size=hash_block_size,
             metrics_collector=metrics_collector,
+            prefix_cache_policy=prefix_cache_policy,
+            slru_protected_tokens=slru_protected_tokens,
+            enable_skip_filler_hashing=enable_skip_filler_hashing,
+            filler_depth_tokens=filler_depth_tokens,
         )
         self.num_single_type_manager = len(self.single_type_managers)
 
@@ -444,6 +462,10 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
         scheduler_block_size: int,
         hash_block_size: int,
         metrics_collector: KVCacheMetricsCollector | None = None,
+        prefix_cache_policy: PrefixCachePolicy = "lru",
+        slru_protected_tokens: int = 0,
+        enable_skip_filler_hashing: bool = False,
+        filler_depth_tokens: int = 0,
     ):
         super().__init__(
             kv_cache_config,
@@ -457,6 +479,10 @@ class UnitaryKVCacheCoordinator(KVCacheCoordinator):
             scheduler_block_size=scheduler_block_size,
             hash_block_size=hash_block_size,
             metrics_collector=metrics_collector,
+            prefix_cache_policy=prefix_cache_policy,
+            slru_protected_tokens=slru_protected_tokens,
+            enable_skip_filler_hashing=enable_skip_filler_hashing,
+            filler_depth_tokens=filler_depth_tokens,
         )
         self.kv_cache_spec = self.kv_cache_config.kv_cache_groups[0].kv_cache_spec
         self.block_size = self.kv_cache_spec.block_size
@@ -530,6 +556,10 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
         scheduler_block_size: int,
         hash_block_size: int,
         metrics_collector: KVCacheMetricsCollector | None = None,
+        prefix_cache_policy: PrefixCachePolicy = "lru",
+        slru_protected_tokens: int = 0,
+        enable_skip_filler_hashing: bool = False,
+        filler_depth_tokens: int = 0,
     ):
         super().__init__(
             kv_cache_config,
@@ -543,6 +573,10 @@ class HybridKVCacheCoordinator(KVCacheCoordinator):
             scheduler_block_size=scheduler_block_size,
             hash_block_size=hash_block_size,
             metrics_collector=metrics_collector,
+            prefix_cache_policy=prefix_cache_policy,
+            slru_protected_tokens=slru_protected_tokens,
+            enable_skip_filler_hashing=enable_skip_filler_hashing,
+            filler_depth_tokens=filler_depth_tokens,
         )
         # hash_block_size: the block size used to compute block hashes.
         # The actual block size usually equals hash_block_size, but in cases where
@@ -791,6 +825,10 @@ def get_kv_cache_coordinator(
     scheduler_block_size: int,
     hash_block_size: int,
     metrics_collector: KVCacheMetricsCollector | None = None,
+    prefix_cache_policy: PrefixCachePolicy = "lru",
+    slru_protected_tokens: int = 0,
+    enable_skip_filler_hashing: bool = False,
+    filler_depth_tokens: int = 0,
 ) -> KVCacheCoordinator:
     if not enable_caching:
         return KVCacheCoordinatorNoPrefixCache(
@@ -804,6 +842,10 @@ def get_kv_cache_coordinator(
             scheduler_block_size=scheduler_block_size,
             hash_block_size=hash_block_size,
             metrics_collector=metrics_collector,
+            prefix_cache_policy=prefix_cache_policy,
+            slru_protected_tokens=slru_protected_tokens,
+            enable_skip_filler_hashing=enable_skip_filler_hashing,
+            filler_depth_tokens=filler_depth_tokens,
         )
     if len(kv_cache_config.kv_cache_groups) == 1:
         return UnitaryKVCacheCoordinator(
@@ -818,6 +860,10 @@ def get_kv_cache_coordinator(
             scheduler_block_size=scheduler_block_size,
             hash_block_size=hash_block_size,
             metrics_collector=metrics_collector,
+            prefix_cache_policy=prefix_cache_policy,
+            slru_protected_tokens=slru_protected_tokens,
+            enable_skip_filler_hashing=enable_skip_filler_hashing,
+            filler_depth_tokens=filler_depth_tokens,
         )
     return HybridKVCacheCoordinator(
         kv_cache_config,
@@ -831,4 +877,8 @@ def get_kv_cache_coordinator(
         scheduler_block_size=scheduler_block_size,
         hash_block_size=hash_block_size,
         metrics_collector=metrics_collector,
+        prefix_cache_policy=prefix_cache_policy,
+        slru_protected_tokens=slru_protected_tokens,
+        enable_skip_filler_hashing=enable_skip_filler_hashing,
+        filler_depth_tokens=filler_depth_tokens,
     )
