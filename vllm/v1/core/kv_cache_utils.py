@@ -122,6 +122,10 @@ class KVCacheBlock:
     block_id: int
     # Reference count.
     ref_cnt: int = 0
+    # How many times this block was re-accessed via prefix-cache hit
+    # while it was in the free list. Controls SLRU segment assignment.
+    # Reset to 0 on hash eviction.
+    num_hits: int = 0
     # The hash key (block hash + group id) of the block, only available
     # when the block is full and cached.
     _block_hash: BlockHashWithGroupId | None = None
@@ -160,6 +164,7 @@ class KVCacheBlock:
         """Reset the block hash when the block is evicted."""
         self._block_hash = None
         self._block_hash_num_tokens = None
+        self.num_hits = 0
 
     def __repr__(self) -> str:
         # Use block_id instead of KVCacheBlock object to avoid calling __repr__
@@ -198,8 +203,14 @@ class FreeKVCacheBlockQueue:
         blocks: A list of KVCacheBlock objects.
     """
 
-    def __init__(self, blocks: list[KVCacheBlock]) -> None:
+    def __init__(
+        self,
+        blocks: list[KVCacheBlock],
+        use_slru: bool = False,
+    ) -> None:
         self.num_free_blocks = len(blocks)
+        self._use_slru = use_slru
+        self._protected_start: KVCacheBlock | None = None
 
         # Initialize doubly links of consecutive blocks
         for i in range(self.num_free_blocks):
@@ -254,6 +265,12 @@ class FreeKVCacheBlockQueue:
                 "which doesn't have a valid next_free_block"
             )
 
+        # Advance _protected_start if the popped block is the boundary.
+        if self._use_slru and first_block is self._protected_start:
+            self._protected_start = first_block.next_free_block
+            if self._protected_start is self.fake_free_list_tail:
+                self._protected_start = None
+
         # Connect fake_head and the next block of first_block (i.e. second block
         # or fake tail).
         self.fake_free_list_head.next_free_block = first_block.next_free_block
@@ -282,8 +299,11 @@ class FreeKVCacheBlockQueue:
         curr_block = self.fake_free_list_head.next_free_block
         # Pop n blocks from the head of the list
         ret = []
+        popped_protected = False
         for _ in range(n):
             assert curr_block is not None
+            if self._use_slru and curr_block is self._protected_start:
+                popped_protected = True
             ret.append(curr_block)
             last_block = curr_block
             curr_block = curr_block.next_free_block
@@ -296,6 +316,12 @@ class FreeKVCacheBlockQueue:
             # the new first block.
             self.fake_free_list_head.next_free_block = curr_block
             curr_block.prev_free_block = self.fake_free_list_head
+
+        if popped_protected:
+            self._protected_start = curr_block
+            if self._protected_start is self.fake_free_list_tail:
+                self._protected_start = None
+
         return ret
 
     def remove(self, block: KVCacheBlock) -> None:
@@ -308,6 +334,12 @@ class FreeKVCacheBlockQueue:
             # This should not happen if the block is from the free list.
             # It indicates a bug in the caller's logic.
             raise RuntimeError(f"remove() called on an invalid block: {block}")
+
+        # Advance _protected_start if removing the boundary block.
+        if self._use_slru and block is self._protected_start:
+            self._protected_start = block.next_free_block
+            if self._protected_start is self.fake_free_list_tail:
+                self._protected_start = None
 
         # Link the previous block to the next block.
         block.prev_free_block.next_free_block = block.next_free_block
@@ -365,11 +397,17 @@ class FreeKVCacheBlockQueue:
     def append_n(self, blocks: list[KVCacheBlock]) -> None:
         """Put a list of blocks back into the free list
 
+        When ``_use_slru`` is active, these blocks are treated as the
+        protected segment — appended at the very tail.
+
         Args:
             blocks: The blocks to append.
         """
         if len(blocks) == 0:
             return
+
+        if self._use_slru and self._protected_start is None:
+            self._protected_start = blocks[0]
 
         last_block = self.fake_free_list_tail.prev_free_block
         assert last_block is not None, (
@@ -384,6 +422,40 @@ class FreeKVCacheBlockQueue:
         # Connect the last block of <blocks> to the fake tail
         last_block.next_free_block = self.fake_free_list_tail
         self.fake_free_list_tail.prev_free_block = last_block
+
+        self.num_free_blocks += len(blocks)
+
+    def append_probationary_n(self, blocks: list[KVCacheBlock]) -> None:
+        """Append blocks to the tail of the probationary segment.
+
+        In SLRU mode this inserts the blocks right before the protected
+        segment (before ``_protected_start``).  Outside SLRU mode it
+        behaves like a regular tail append.
+
+        Args:
+            blocks: The blocks to append to the probationary segment.
+        """
+        if len(blocks) == 0:
+            return
+
+        if self._use_slru and self._protected_start is not None:
+            # Insert right before the first protected block.
+            insert_after = self._protected_start.prev_free_block
+            for block in blocks:
+                block.prev_free_block = insert_after
+                insert_after.next_free_block = block
+                insert_after = block
+            block.next_free_block = self._protected_start
+            self._protected_start.prev_free_block = block
+        else:
+            # No boundary (all blocks are probationary) → regular tail append.
+            last_block = self.fake_free_list_tail.prev_free_block
+            for block in blocks:
+                block.prev_free_block = last_block
+                last_block.next_free_block = block
+                last_block = block
+            block.next_free_block = self.fake_free_list_tail
+            self.fake_free_list_tail.prev_free_block = block
 
         self.num_free_blocks += len(blocks)
 

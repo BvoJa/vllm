@@ -115,18 +115,20 @@ class CacheConfig:
     - "lru" (default) evicts the least-recently-freed block. Within a single
       freed request, tail blocks are already ordered ahead of prefix blocks, so
       plain LRU is mildly prefix-preserving.
-    - "slru" splits the free list into a protected and a probationary segment.
-      Blocks whose prefix depth is at or below `slru_protected_tokens` go to the
-      protected segment and are only evicted once the probationary segment is
-      exhausted. Both segments stay O(1) and add no per-block memory.
+    - "slru" splits the free list into a protected and a probationary segment
+      based on actual reuse count (``num_hits``). Blocks that have been hit at
+      least once via prefix caching go to the protected segment and are only
+      evicted once the probationary segment is exhausted. Demotion happens
+      implicitly via the eviction cycle.
 
     Falls back to the `VLLM_PREFIX_CACHE_POLICY` environment variable, then to
     "lru", when unset."""
 
-    slru_protected_tokens: int | None = Field(default=1000, ge=0)
-    """Prefix depth in tokens at or below which a block enters the SLRU
-    protected segment. Only meaningful when `prefix_cache_policy="slru"`.
-    Falls back to `VLLM_SLRU_PROTECTED_TOKENS`, then to 1000, when unset."""
+    slru_protected_tokens: int | None = Field(default=None, ge=0)
+    """Deprecated. This field is ignored under ``prefix_cache_policy="slru"``.
+    The real SLRU implementation classifies blocks by actual reuse count
+    (``KVCacheBlock.num_hits``), not by prefix depth. Kept for backward
+    compatibility; setting a non-default value emits a warning."""
 
     calculate_kv_scales: bool = False
     """Deprecated: This option is deprecated and will be removed in v0.19.
@@ -277,6 +279,17 @@ class CacheConfig:
             self.user_specified_block_size = True
         if self.mamba_block_size is not None:
             self.user_specified_mamba_block_size = True
+        if (
+            self.slru_protected_tokens is not None
+            and self.prefix_cache_policy == "slru"
+        ):
+            logger.warning(
+                "`slru_protected_tokens` is deprecated and ignored under "
+                "`prefix_cache_policy='slru'`. The real SLRU implementation "
+                "classifies blocks by actual reuse count (num_hits), not by "
+                "prefix depth. To suppress this warning, remove "
+                "--slru-protected-tokens from your command line."
+            )
         return self
 
     @field_validator("calculate_kv_scales", mode="after")

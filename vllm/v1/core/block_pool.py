@@ -182,7 +182,9 @@ class BlockPool:
         # Free block queue that constructs and manipulates a doubly linked
         # list of free blocks (including eviction candidates when caching is
         # enabled).
-        self.free_block_queue = FreeKVCacheBlockQueue(self.blocks)
+        self.free_block_queue = FreeKVCacheBlockQueue(
+            self.blocks, use_slru=(self.prefix_cache_policy == "slru")
+        )
 
         # Cache for block lookup
         self.cached_block_hash_to_block: BlockHashToBlockMap = BlockHashToBlockMap()
@@ -694,6 +696,7 @@ class BlockPool:
             # candidate), so remove it.
             if block.ref_cnt == 0 and not block.is_null:
                 self.free_block_queue.remove(block)
+                block.num_hits += 1
             block.ref_cnt += 1
             if self.metrics_collector:
                 self.metrics_collector.on_block_accessed(block)
@@ -703,41 +706,37 @@ class BlockPool:
         eviction priority, where the first block will be evicted first.
 
         When ``prefix_cache_policy == "slru"``, freed blocks are classified
-        into three tiers by prefix depth:
+        by their actual reuse count (``num_hits``):
 
-        * **unhashed** (no block hash) — evicted first.
-        * **probationary** (hash exists but depth > slru_protected_tokens) —
-          evicted after all unhashed blocks.
-        * **protected** (depth <= slru_protected_tokens) — evicted last.
+        * **probationary** (``num_hits == 0``) — evicted first.
+        * **protected** (``num_hits >= 1``) — evicted last.
 
-        Within each tier, LRU ordering is preserved.  All probationary blocks
-        from *every* past call remain ahead of all protected blocks because
-        ``prepend_n`` inserts at the head (before existing blocks) while
-        ``append_n`` inserts at the tail (after existing blocks).
+        Within each tier LRU ordering is preserved — the oldest-freed
+        block sits at the head and is evicted first. All probationary
+        blocks from every past call remain ahead of all protected blocks
+        because ``append_probationary_n`` inserts right before the
+        protected segment while ``append_n`` inserts at the very tail.
+
+        Demotion is implicit: when a protected block is eventually evicted,
+        ``_maybe_evict_cached_block`` calls ``reset_hash`` which clears
+        ``num_hits``, so it re-enters the free list as probationary on its
+        next ``free_blocks`` call.
 
         Args:
             ordered_blocks: A list of blocks to free ordered by their eviction
                 priority.
         """
         if self.prefix_cache_policy == "slru":
-            unhashed: list[KVCacheBlock] = []
             probationary: list[KVCacheBlock] = []
             protected: list[KVCacheBlock] = []
             for block in ordered_blocks:
                 block.ref_cnt -= 1
                 if block.ref_cnt == 0 and not block.is_null:
-                    if block.block_hash is None:
-                        unhashed.append(block)
-                    elif (
-                        block.block_hash_num_tokens is not None
-                        and block.block_hash_num_tokens
-                        <= self.slru_protected_tokens
-                    ):
+                    if block.num_hits >= 1:
                         protected.append(block)
                     else:
                         probationary.append(block)
-            # unhashed+probationary → head (evict first); protected → tail
-            self.free_block_queue.prepend_n(unhashed + probationary)
+            self.free_block_queue.append_probationary_n(probationary)
             self.free_block_queue.append_n(protected)
         else:
             # LRU: identify blocks with hash and without it
