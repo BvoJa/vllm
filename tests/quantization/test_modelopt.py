@@ -133,7 +133,6 @@ def test_modelopt_mixed_precision_quantizes_parallel_lm_head():
     assert isinstance(method, ModelOptNvFp4LinearMethod)
 
 
-<<<<<<< HEAD
 def test_modelopt_mixed_precision_resolves_declared_packed_projection():
     config = _mixed_precision_config(
         {
@@ -166,8 +165,6 @@ def test_modelopt_mixed_precision_does_not_quantize_unlisted_fused_sibling():
     assert config._resolve_quant_algo("model.layers.0.linear_attn.in_proj_ba") is None
 
 
-=======
->>>>>>> pr-50146
 def test_modelopt_mixed_precision_infers_fused_gate_up_projection():
     from vllm.model_executor.layers.linear import LinearBase
 
