@@ -136,6 +136,7 @@ from vllm.v1.attention.backends.linear_attn import (
     BailingLinearAttentionMetadataBuilder,
 )
 from vllm.v1.attention.backends.mamba2_attn import Mamba2AttentionMetadataBuilder
+from vllm.v1.attention.backends.short_conv_attn import ShortConvAttentionMetadataBuilder
 from vllm.v1.attention.backends.utils import (
     NULL_BLOCK_ID,
     create_fast_prefill_custom_backend,
@@ -2460,6 +2461,7 @@ class GPUModelRunner(
                     Mamba2AttentionMetadataBuilder,
                     GDNAttentionMetadataBuilder,
                     BailingLinearAttentionMetadataBuilder,
+                    ShortConvAttentionMetadataBuilder,
                 ),
             ):
                 assert ubid is None, (
@@ -7216,7 +7218,13 @@ class GPUModelRunner(
                     _, blk_stride = packing
                     num_blocks = raw_tensor.numel() // blk_stride
                 else:
-                    assert raw_tensor.numel() % kv_cache_spec.page_size_bytes == 0
+                    assert (
+                        raw_tensor.numel() % kv_cache_spec.page_size_bytes == 0
+                        or isinstance(kv_cache_spec, MambaSpec)
+                    ), (
+                        f"raw_tensor.numel()={raw_tensor.numel()} not divisible by"
+                        f" page_size_bytes={kv_cache_spec.page_size_bytes}"
+                    )
                     num_blocks = raw_tensor.numel() // kv_cache_spec.page_size_bytes
                 if isinstance(kv_cache_spec, AttentionSpec):
                     has_attn = True
