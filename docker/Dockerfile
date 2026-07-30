@@ -896,6 +896,16 @@ RUN --mount=type=cache,target=/opt/uv/cache \
 . /etc/environment && \
 uv pip list
 
+# install huggingface_hub
+RUN --mount=type=cache,target=/opt/uv/cache \
+    uv pip install --system huggingface_hub
+
+# Download the draft model for speculative decoding.
+# This model is specified in the docker-compose.yml file to be used with
+# the --speculative-config '{"method": "draft_model", "model": "/draft_model"}' argument.
+RUN --mount=type=cache,target=/opt/uv/cache \
+    huggingface-cli download LiquidAI/LFM2.5-350M --local-dir /draft_model --local-dir-use-symlinks False
+
 # Pytorch now installs NVSHMEM, setting LD_LIBRARY_PATH
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
