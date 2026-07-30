@@ -1,7 +1,3 @@
-
-CONFLICT (content): Merge conflict in vllm/v1/core/kv_cache_manager.py# SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-
 import itertools
 from collections.abc import Sequence
 from dataclasses import dataclass
